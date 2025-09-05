@@ -3,6 +3,8 @@ import { Share2, Download, Eye } from 'lucide-react'
 import Button from './Button'
 import Card from './Card'
 import { useApp } from '../context/AppContext'
+import { aiService } from '../services/openai'
+import { geolocationService } from '../services/geolocation'
 
 export default function ShareCardGenerator({ variant = 'preview' }) {
   const [isGenerating, setIsGenerating] = useState(false)
@@ -15,8 +17,51 @@ export default function ShareCardGenerator({ variant = 'preview' }) {
   const generateSummaryCard = async () => {
     setIsGenerating(true)
     
-    // Simulate AI generation with OpenAI
-    setTimeout(() => {
+    try {
+      let locationData = null
+      
+      if (includeLocation) {
+        try {
+          locationData = await geolocationService.getLocationWithAddress()
+        } catch (error) {
+          console.warn('Could not get location:', error.message)
+          locationData = { address: { formatted: 'Location unavailable' } }
+        }
+      }
+
+      const incidentData = {
+        timestamp: new Date().toISOString(),
+        location: locationData?.address?.formatted || 'Location not shared',
+        type: 'general',
+        notes: customMessage
+      }
+
+      const summaryCard = await aiService.generateSummaryCard(
+        incidentData, 
+        state.selectedState || 'General'
+      )
+
+      const card = {
+        id: Date.now().toString(),
+        timestamp: summaryCard.timestamp,
+        state: state.selectedState || 'General',
+        location: includeLocation ? summaryCard.location : 'Location hidden',
+        keyRights: includeRights ? [
+          'Right to remain silent',
+          'Right to refuse searches without warrant',
+          'Right to ask if you are free to leave',
+          'Right to have an attorney present'
+        ] : [],
+        customMessage: customMessage,
+        emergencyContacts: state.trustedContacts.length,
+        aiSummary: summaryCard.summary,
+        keyPoints: summaryCard.keyPoints
+      }
+      
+      setGeneratedCard(card)
+    } catch (error) {
+      console.error('Error generating summary card:', error)
+      // Fallback to basic card
       const card = {
         id: Date.now().toString(),
         timestamp: new Date().toISOString(),
@@ -31,10 +76,10 @@ export default function ShareCardGenerator({ variant = 'preview' }) {
         customMessage: customMessage,
         emergencyContacts: state.trustedContacts.length
       }
-      
       setGeneratedCard(card)
+    } finally {
       setIsGenerating(false)
-    }, 2000)
+    }
   }
 
   const shareCard = async () => {
