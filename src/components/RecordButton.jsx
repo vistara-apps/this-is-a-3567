@@ -2,6 +2,9 @@ import React, { useState, useRef } from 'react'
 import { Mic, Video, Square, Play } from 'lucide-react'
 import Button from './Button'
 import { useApp } from '../context/AppContext'
+import { pinataService } from '../services/pinata'
+import { geolocationService } from '../services/geolocation'
+import { db } from '../services/supabase'
 
 export default function RecordButton({ variant = 'both' }) {
   const [isRecording, setIsRecording] = useState(false)
@@ -28,23 +31,86 @@ export default function RecordButton({ variant = 'both' }) {
         }
       }
 
-      mediaRecorder.onstop = () => {
+      mediaRecorder.onstop = async () => {
         const blob = new Blob(chunks, { 
           type: type === 'audio' ? 'audio/webm' : 'video/webm' 
         })
         setRecordedBlob(blob)
         
-        // Create recording record
-        const recording = {
-          id: Date.now().toString(),
-          timestamp: new Date().toISOString(),
-          location: 'Location access needed', // Would implement geolocation
-          type: type,
-          blob: blob,
-          size: blob.size
-        }
+        try {
+          // Get location data
+          let locationData = null
+          try {
+            locationData = await geolocationService.getLocationWithAddress()
+          } catch (error) {
+            console.warn('Could not get location:', error.message)
+          }
 
-        dispatch({ type: 'ADD_RECORDING', payload: recording })
+          // Upload to Pinata IPFS
+          const uploadResult = await pinataService.uploadFile(blob, {
+            name: `recording-${Date.now()}.${type === 'audio' ? 'webm' : 'webm'}`,
+            type: 'recording',
+            timestamp: new Date().toISOString(),
+            userId: state.user?.id || 'anonymous',
+            customData: {
+              recordingType: type,
+              location: locationData?.address?.formatted
+            }
+          })
+
+          // Create recording record
+          const recording = {
+            id: Date.now().toString(),
+            timestamp: new Date().toISOString(),
+            location: locationData,
+            type: type,
+            blob: blob,
+            size: blob.size,
+            ipfsHash: uploadResult.ipfsHash,
+            gatewayUrl: uploadResult.gatewayUrl,
+            uploaded: uploadResult.success
+          }
+
+          // Save to database if user is authenticated
+          if (state.user?.id) {
+            try {
+              await db.createIncidentRecord({
+                userId: state.user.id,
+                timestamp: recording.timestamp,
+                location: locationData,
+                audioUrl: type === 'audio' ? uploadResult.gatewayUrl : null,
+                videoUrl: type === 'video' ? uploadResult.gatewayUrl : null,
+                ipfsHash: uploadResult.ipfsHash,
+                incidentType: 'recording',
+                metadata: {
+                  size: blob.size,
+                  duration: 0, // Would need to calculate
+                  recordingType: type
+                }
+              })
+            } catch (dbError) {
+              console.error('Failed to save to database:', dbError)
+            }
+          }
+
+          dispatch({ type: 'ADD_RECORDING', payload: recording })
+        } catch (error) {
+          console.error('Error processing recording:', error)
+          
+          // Fallback: save locally without upload
+          const recording = {
+            id: Date.now().toString(),
+            timestamp: new Date().toISOString(),
+            location: 'Location access needed',
+            type: type,
+            blob: blob,
+            size: blob.size,
+            uploaded: false,
+            error: error.message
+          }
+          
+          dispatch({ type: 'ADD_RECORDING', payload: recording })
+        }
         
         // Stop all tracks
         stream.getTracks().forEach(track => track.stop())
